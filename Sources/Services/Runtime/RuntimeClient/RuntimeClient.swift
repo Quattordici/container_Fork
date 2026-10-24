@@ -178,14 +178,21 @@ extension RuntimeClient {
         }
     }
 
+    private static let stopGracePeriodSeconds: Int64 = 60
+    private static let shutdownTimeoutSeconds: Int64 = 30
+
     public func stop(options: ContainerStopOptions) async throws {
         let request = XPCMessage(route: RuntimeRoutes.stop.rawValue)
 
         let data = try JSONEncoder().encode(options)
         request.set(key: RuntimeKeys.stopOptions.rawValue, value: data)
 
+        // Bound the call: the runtime waits up to `timeoutInSeconds` before SIGKILL, then
+        // powers off the VM. Allow a grace period on top so a wedged runtime cannot hang us forever.
+        let responseTimeout: Duration = .seconds(Int64(max(options.timeoutInSeconds, 0)) + Self.stopGracePeriodSeconds)
+
         do {
-            try await self.client.send(request)
+            try await self.client.send(request, responseTimeout: responseTimeout)
         } catch {
             throw ContainerizationError(
                 .internalError,
@@ -274,7 +281,7 @@ extension RuntimeClient {
         let request = XPCMessage(route: RuntimeRoutes.shutdown.rawValue)
 
         do {
-            _ = try await self.client.send(request)
+            _ = try await self.client.send(request, responseTimeout: .seconds(Self.shutdownTimeoutSeconds))
         } catch {
             throw ContainerizationError(
                 .internalError,

@@ -625,6 +625,24 @@ public actor ContainersService {
             try await client.stop(options: resolvedOptions)
         } catch let err as ContainerizationError {
             if err.code != .interrupted {
+                // The runtime failed or timed out. Tear down anyway so the runtime
+                // service, launchd registration and state don't leak.
+                self.log.error(
+                    "failed to stop container, forcing teardown",
+                    metadata: [
+                        "id": "\(id)",
+                        "error": "\(err)",
+                    ])
+                do {
+                    try await handleContainerExit(id: id)
+                } catch {
+                    self.log.error(
+                        "forced teardown after failed stop also failed",
+                        metadata: [
+                            "id": "\(id)",
+                            "error": "\(error)",
+                        ])
+                }
                 throw err
             }
         }
@@ -874,7 +892,17 @@ public actor ContainersService {
                 signal: "SIGKILL"
             )
             let client = try state.getClient()
-            try await client.stop(options: opts)
+            do {
+                try await client.stop(options: opts)
+            } catch {
+                // Force delete must still clean up even if the runtime is wedged.
+                self.log.error(
+                    "failed to stop container during force delete, cleaning up anyway",
+                    metadata: [
+                        "id": "\(id)",
+                        "error": "\(error)",
+                    ])
+            }
             try await self.lock.withLock(logMetadata: ["acquirer": "\(#function)", "id": "\(id)"]) { context in
                 self.log.info(
                     "ContainersService: attempt cleanup",
